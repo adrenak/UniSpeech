@@ -1,9 +1,11 @@
-﻿using System;
+﻿// FOR LICENSE AND README GO TO: https://www.github.com/adrenak/unimic
+
+using System;
 using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 
-namespace Adrenak.UniMic {
+namespace Adrenak.UniSpeech {
 	[RequireComponent(typeof(AudioSource))]
 	public class Mic : MonoBehaviour {
 		// ================================================
@@ -136,7 +138,7 @@ namespace Adrenak.UniMic {
 		/// <summary>
 		/// Starts to stream the input of the current Mic device
 		/// </summary>
-		public void StartRecording(int frequency = 16000, int sampleLen = 10) {
+		public void StartRecording(int frequency, int sampleLen) {
 			StopRecording();
 			IsRecording = true;
 
@@ -184,7 +186,7 @@ namespace Adrenak.UniMic {
 			try {
 				m_AudioSource.GetSpectrumData(spectrumData, 0, fftWindow);
 			}
-			catch (NullReferenceException e) {
+			catch {
 				spectrumData = null;
 			}
 			return spectrumData;

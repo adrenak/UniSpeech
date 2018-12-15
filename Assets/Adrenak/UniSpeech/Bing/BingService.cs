@@ -2,37 +2,38 @@
 using System.Linq;
 using System.Collections.Generic;
 using WebSocketSharp;
+using Adrenak.Unex;
 
 namespace Adrenak.UniSpeech {
 	public class BingService {
-		const string k_BaseUrl = "wss://westus.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?format=simple&language={0}";
-		const string k_Lang = "en-US";
-
+		public string BaseUrl = "wss://westus.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?format=simple&language={0}";
+		public string Lang = "en-US";
+		public bool DoDebug { get; set; }
+		public bool Loop { get; set; }
 		public BingAuthorization Auth { get; private set; }
 
-		BingState m_State;
-		public BingState State {
-			get { return m_State; }
+		BingStatus m_Status;
+		public BingStatus Status {
+			get { return m_Status; }
 			private set {
-				m_State = value;
-				Dispatcher.Enqueue(() => OnStateChange.TryInvoke(m_State));
+				m_Status = value;
+				OnStatusChange.TryInvoke(m_Status);
 			}
 		}
 
 		WebSocket m_Socket = null;
 		string m_RequestId;
-		bool m_Running = false;
 
 		// The header that needs to go with each speech segment
 		byte[] m_Header;
 
 		// The audio segment populated from individual audio samples that needs to be sent via the socket once filled
 		byte[] m_Buffer = new byte[0];
-		
+
 		// ================================================
 		// EVENTS
 		// ================================================
-		public event Action<BingState> OnStateChange;
+		public event Action<BingStatus> OnStatusChange;
 		public event Action<MessageBase> OnGetMessage;
 		public event Action<Exception> OnError;
 
@@ -48,19 +49,24 @@ namespace Adrenak.UniSpeech {
 		// PUBLIC
 		// ================================================
 		/// <summary>
-		/// Creates a new instance
+		/// Creates a new instance. CALL FROM THE MAIN THREAD
 		/// </summary>
 		public BingService() {
-			UniSpeechSecurity.Init();
+			SecurityManager.Init();
 			Dispatcher.Create();
-			var url = String.Format(k_BaseUrl, k_Lang);
+
+			var url = String.Format(BaseUrl, Lang);
 			m_Socket = new WebSocket(url);
-			SubscribeToSockets();
+			m_Socket.OnError += OnSocketError;
+			m_Socket.OnMessage += OnSocketMessage;
 		}
 
 		~BingService() {
-			Dispose();
-			UnsubscribeToSocket();
+			Auth.Dispose();
+
+			m_Socket.OnError -= OnSocketError;
+			m_Socket.OnMessage -= OnSocketMessage;
+			m_Socket = null;
 		}
 
 		/// <summary>
@@ -69,17 +75,21 @@ namespace Adrenak.UniSpeech {
 		/// <param name="key">The Bing Speech to Text API key</param>
 		/// <param name="callback">Bool callback for whether the authentication was successful</param>
 		public void Authenticate(string key, Action<string> onSuccess, Action<Exception> onFailure) {
+			TryLog("Authenticating");
 			Auth = new BingAuthorization(key);
+			Status = BingStatus.Authenticating;
 
 			Auth.FetchToken(
 				token => {
-					State = BingState.Authenticated;
+					TryLog("Authorized: " + token);
+					Status = BingStatus.Authenticated;
 					m_RequestId = BingUtils.GetNewRequestID();
 					m_Header = BingUtils.GetHeader(m_RequestId);
 					onSuccess.TryInvoke(token);
 				},
 				exception => {
-					State = BingState.Idle;
+					TryLogError(exception);
+					Status = BingStatus.Idle;
 					onFailure.TryInvoke(exception);
 				}
 			);
@@ -88,10 +98,10 @@ namespace Adrenak.UniSpeech {
 		/// <summary>
 		/// Establishes socket connected with the server
 		/// </summary>
-		/// <returns>Whether the socket can attemp to connect.</returns>
+		/// <returns>Whether the socket can attempt to connect. Usually returns true when the service has not been authenticated</returns>
 		public bool Connect() {
-			if (State != BingState.Authenticated || State == BingState.Connected) {
-				UnityEngine.Debug.LogError("Invoke Authenticate before Connect");
+			if (Status == BingStatus.Idle || !Auth.IsValid()) {
+				TryLogError("Could not connect. Not authorized");
 				return false;
 			}
 
@@ -100,7 +110,37 @@ namespace Adrenak.UniSpeech {
 				{ "Authorization", "Bearer " + Auth.Token}
 			};
 
-			m_Socket.ConnectAsync();
+			TryLog("Connecting...");
+			Status = BingStatus.Connecting;
+			m_Socket.ConnectAsync(
+				() => {
+					TryLog("Connected");
+					Status = BingStatus.Connected;
+				},
+				exception => {
+					TryLogError("Could not connect: " + exception);
+					Status = BingStatus.Authenticated;
+				}
+			);
+			return true;
+		}
+
+		/// <summary>
+		/// Disconnects the instance by closing the socket connection
+		/// </summary>
+		/// <returns></returns>
+		public bool Disconnect() {
+			if (Status < BingStatus.Connected) {
+				TryLogError("Can not disconnect. Not connected");
+				return false;
+			}
+
+			TryLog("Disconnecting");
+			Status = BingStatus.Disconnecting;
+			m_Socket.CloseAsync(() => {
+				TryLog("Disconnected");
+				Status = BingStatus.Authenticated;
+			});
 			return true;
 		}
 
@@ -113,23 +153,23 @@ namespace Adrenak.UniSpeech {
 			if (sample.Length == 0)
 				return false;
 
-			if (State != BingState.Connected && State != BingState.StreamingStarted)
+			if (Status < BingStatus.Connected)
 				return false;
 
-			if (State == BingState.Connected) {
-				State = BingState.StreamingStarted;
+			if (Status == BingStatus.Connected) {
+				Status = BingStatus.Streaming;
 
 				// Before we stream the audio, we must once send the speechConfig
 				var config = BingUtils.GetConfig(m_RequestId);
 				m_Socket.Send(config);
 			}
+
 			var freeBytes = 8192 - m_Header.Length;
 			m_Buffer = m_Buffer.Concat(sample).ToArray();
 
 			// If we can not add more to the buffer
-			//if(m_Buffer.Length + sample.Length < freeBytes)
-			if (m_Buffer.Length != (freeBytes / sample.Length) * sample.Length)
-				return false;
+			if (m_Buffer.Length + sample.Length < freeBytes)
+				return true;
 
 			// We require 8192 bytes to data. After adding header and audio data, we may still have some bytes left
 			// We fill them up with empty/blank bytes and send via the socket. The blank is small enough that the service will
@@ -137,29 +177,19 @@ namespace Adrenak.UniSpeech {
 			var blankLen = 8192 - m_Header.Length - m_Buffer.Length;
 			var packet = m_Header.Concat(m_Buffer).Concat(new byte[blankLen]).ToArray();
 
-			m_Socket.Send(packet);
+			try { m_Socket.Send(packet); } catch { }
 			m_Buffer = new byte[0];
 
 			return true;
 		}
 
-		/// <summary>
-		/// Disposes the instance
-		/// </summary>
-		public void Dispose() {
-			m_Running = false;
-			Auth.Dispose();
-			m_Socket = null;
+		public bool IsAuthorized() {
+			return Auth != null && Auth.IsValid();
 		}
 
 		// ================================================
 		// SOCKET EVENTS
 		// ================================================
-		void OnSocketOpen(object sender, EventArgs e) {
-			// Set state to connected so that the Stream method can work
-			State = BingState.Connected;
-		}
-
 		void OnSocketError(object sender, ErrorEventArgs e) {
 			var exception = e.Exception;
 			if (exception != null)
@@ -167,20 +197,12 @@ namespace Adrenak.UniSpeech {
 			else
 				OnError.TryInvoke(new Exception("Unknown socket error"));
 
-			State = BingState.Authenticated;
+			Status = BingStatus.Authenticated;
 		}
 
 		void OnSocketMessage(object sender, MessageEventArgs e) {
 			var parser = new MessageParser(e.Data);
 			var message = parser.GetObject();
-
-			Action EndStreaming = () => {
-				// Blip the state
-				State = BingState.StreamingEnded;
-				State = BingState.Connected;
-				m_Socket.Send(BingUtils.TurnEndAcknowledgement());
-				m_Buffer = new byte[0];
-			};
 
 			// All events are fired from the main thread
 			Dispatcher.Enqueue(() => {
@@ -190,15 +212,19 @@ namespace Adrenak.UniSpeech {
 						OnTurnStart.TryInvoke(message as TurnStartMessage);
 						break;
 					case "turn.end":
-						EndStreaming();
+						m_Socket.Send(BingUtils.TurnEndAcknowledgement());
+						m_Buffer = new byte[0];
 						OnTurnEnd.TryInvoke(message as TurnEndMessage);
+
+						Status = BingStatus.Disconnecting;
+						m_Socket.CloseAsync(() => {
+							Connect();
+						});
 						break;
 					case "speech.enddetected":
-						EndStreaming();
 						OnSpeechEndDetected.TryInvoke(message as SpeechEndDetectedMessage);
 						break;
 					case "speech.phrase":
-						EndStreaming();
 						OnSpeechPhrase.TryInvoke(message as SpeechPhraseMessage);
 						break;
 					case "speech.hypothesis":
@@ -214,26 +240,14 @@ namespace Adrenak.UniSpeech {
 			});
 		}
 
-		void OnSocketClose(object sender, CloseEventArgs e) {
-			if (!m_Running) {
-				m_Socket.Close();
-				m_Socket = null;
-			}
-			State = BingState.Idle;
+		void TryLog(object msg) {
+			if (DoDebug)
+				UnityEngine.Debug.Log("[BingService]" + msg);
 		}
 
-		void SubscribeToSockets() {
-			m_Socket.OnOpen += OnSocketOpen;
-			m_Socket.OnError += OnSocketError;
-			m_Socket.OnMessage += OnSocketMessage;
-			m_Socket.OnClose += OnSocketClose;
-		}
-
-		void UnsubscribeToSocket() {
-			m_Socket.OnOpen -= OnSocketOpen;
-			m_Socket.OnError -= OnSocketError;
-			m_Socket.OnMessage -= OnSocketMessage;
-			m_Socket.OnClose -= OnSocketClose;
+		void TryLogError(object err) {
+			if (DoDebug)
+				UnityEngine.Debug.LogError("[BingService]" + err);
 		}
 	}
 }

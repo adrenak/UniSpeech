@@ -499,11 +499,12 @@ PlayerSettings:
   webGLCompressionFormat: 1
   scriptingDefineSymbols:
     1: UNISPEECH_RSG_PROMISE
+    7: 
   platformArchitecture: {}
   scriptingBackend: {}
   incrementalIl2cppBuild: {}
   additionalIl2CppArgs: 
-  scriptingRuntimeVersion: 1
+  scriptingRuntimeVersion: 0
   apiCompatibilityLevelPerPlatform: {}
   m_RenderingPath: 1
   m_MobileRenderingPath: 1

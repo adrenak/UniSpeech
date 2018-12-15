@@ -1,15 +1,16 @@
 ﻿using System;
 using RestSharp;
 using System.Threading;
-using Adrenak.UniSpeech;
+using Adrenak.Unex;
 
 namespace Adrenak.UniSpeech {
 	public class BingAuthorization {
-		const string k_TokenFetchUrl = "https://westus.api.cognitive.microsoft.com/sts/v1.0/issueToken";
-		string m_SubscriptionKey;
+		public event Action<string> OnFetchToken;
+		public static string TokenFetchUrl = "https://westus.api.cognitive.microsoft.com/sts/v1.0/issueToken";
 		public string Token { get; private set; }
-		Timer m_TokenTimer;
 
+		string m_SubscriptionKey;
+		Timer m_TokenTimer;
 		bool m_Enabled;
 
 		// We need to renew token every 10 minutes, we set the timer duration to 9
@@ -18,18 +19,21 @@ namespace Adrenak.UniSpeech {
 		public BingAuthorization(string subscriptionKey) {
 			m_SubscriptionKey = subscriptionKey;
 		}
-
-		public void FetchToken(Action<string> onSuccess = null, Action<Exception> onFailure = null) {
+		
+		public void FetchToken(Action<string> onSuccess, Action<Exception> onFailure) {
+			Token = string.Empty;
 			m_Enabled = true;
 
-			var client = new RestClient(k_TokenFetchUrl);
+			var client = new RestClient(TokenFetchUrl);
 			var request = new RestRequest(Method.POST);
 			request.AddHeader("Ocp-Apim-Subscription-Key", m_SubscriptionKey);
 
 			client.ExecuteAsync(request, (response, handle) => {
-				if (response.IsSuccess()) {					
+				if (response.IsSuccess()) {
 					Token = response.Content;
 					onSuccess.TryInvoke(Token);
+					OnFetchToken.TryInvoke(Token);
+					CreateTimer();
 				}
 				else
 					onFailure.TryInvoke(response.GetException());
@@ -44,8 +48,15 @@ namespace Adrenak.UniSpeech {
 			StopFetch();
 			if (m_TokenTimer != null) m_TokenTimer.Dispose();
 		}
+
+		public bool IsValid() {
+			return !string.IsNullOrEmpty(Token);
+		}
 		
 		void CreateTimer() {
+			if (m_TokenTimer != null)
+				m_TokenTimer.Dispose();
+
 			m_TokenTimer = new Timer(
 				new TimerCallback(OnTokenExpiredCallback),
 				this,
@@ -56,7 +67,7 @@ namespace Adrenak.UniSpeech {
 
 		void OnTokenExpiredCallback(object stateInfo) {
 			if (m_Enabled)
-				FetchToken();
+				FetchToken(null, null);
 		}
 	}
 }

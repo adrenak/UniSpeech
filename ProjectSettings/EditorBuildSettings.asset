@@ -5,6 +5,6 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
-    path: Assets/Adrenak/1.unity
+  - enabled: 0
+    path: 
     guid: d8da89288d225a041ada17a2125e2d27

@@ -4,7 +4,7 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Adrenak.UniSpeech {
-    public static class UniSpeechSecurity {
+    public static class SecurityManager {
         public static void Init() {
             ServicePointManager.ServerCertificateValidationCallback = MyRemoteCertificateValidationCallback;
         }

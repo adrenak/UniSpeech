@@ -1,9 +1,11 @@
 ﻿namespace Adrenak.UniSpeech {
-	public enum BingState {
+	public enum BingStatus {
 		Idle,
+		Authenticating,
 		Authenticated,
+		Connecting,
 		Connected,
-		StreamingStarted,
-		StreamingEnded
+		Streaming,
+		Disconnecting
 	}
 }
